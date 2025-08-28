@@ -1,4 +1,4 @@
-﻿// --- Roller Naptár v3 - Szerver Kód (Render PostgreSQL) ---
+﻿// --- Roller Naptár v3 - Szerver Kód (Render PostgreSQL) - JAVÍTOTT ---
 
 const express = require('express');
 const http = require('http');
@@ -26,14 +26,15 @@ const pool = new Pool({
 
 // Függvény, ami létrehozza a táblát, ha még nem létezik
 async function setupDatabase() {
-    const createTableQuery = 
+    // ---- ITT VOLT A HIBA, MOST JAVÍTVA (backtickek ` ` közé téve) ----
+    const createTableQuery = `
         CREATE TABLE IF NOT EXISTS bookings (
             "startTime" TEXT PRIMARY KEY,
             "endTime" TEXT NOT NULL,
             "userName" TEXT NOT NULL,
             "userEmail" TEXT NOT NULL
         );
-    ;
+    `;
     try {
         await pool.query(createTableQuery);
         console.log("Az 'bookings' tábla készen áll.");
@@ -75,14 +76,14 @@ io.on('connection', async (socket) => {
         if (!payload) return socket.emit('bookingError', 'Érvénytelen azonosító!');
 
         try {
-            const overlapQuery = 
-                SELECT * FROM bookings WHERE (::timestamptz, ::timestamptz) OVERLAPS ("startTime"::timestamptz, "endTime"::timestamptz)
-            ;
+            const overlapQuery = `
+                SELECT * FROM bookings WHERE ($1::timestamptz, $2::timestamptz) OVERLAPS ("startTime"::timestamptz, "endTime"::timestamptz)
+            `;
             const overlapCheck = await pool.query(overlapQuery, [startTime, endTime]);
             if (overlapCheck.rows.length > 0) {
                 return socket.emit('bookingError', 'Ez az időszak ütközik egy meglévő foglalással!');
             }
-            const insertQuery = INSERT INTO bookings ("startTime", "endTime", "userName", "userEmail") VALUES (, , , );
+            const insertQuery = `INSERT INTO bookings ("startTime", "endTime", "userName", "userEmail") VALUES ($1, $2, $3, $4)`;
             await pool.query(insertQuery, [startTime, endTime, payload.name, payload.email]);
             socket.emit('bookingSuccess', 'Sikeres foglalás!');
             broadcastBookings();
@@ -99,9 +100,9 @@ io.on('connection', async (socket) => {
         try {
             let result;
             if (payload.email === ADMIN_EMAIL) {
-                result = await pool.query('DELETE FROM bookings WHERE "startTime" = ', [startTime]);
+                result = await pool.query('DELETE FROM bookings WHERE "startTime" = $1', [startTime]);
             } else {
-                result = await pool.query('DELETE FROM bookings WHERE "startTime" =  AND "userEmail" = ', [startTime, payload.email]);
+                result = await pool.query('DELETE FROM bookings WHERE "startTime" = $1 AND "userEmail" = $2', [startTime, payload.email]);
             }
             if (result.rowCount === 0 && payload.email !== ADMIN_EMAIL) {
                return socket.emit('bookingError', 'Nincs jogosultságod a foglalás törléséhez!');
@@ -115,6 +116,6 @@ io.on('connection', async (socket) => {
 });
 
 server.listen(PORT, () => {
-    console.log(A szerver a http://localhost: címen fut);
+    console.log(`A szerver a http://localhost:${PORT} címen fut`);
     setupDatabase(); // Elindítjuk az adatbázis beállítását a szerver indulásakor
 });

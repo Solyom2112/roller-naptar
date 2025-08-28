@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roller Naptár v3 - Google Auth</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f4f4f9; color: #333; }
+        .container { max-width: 800px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1, h2 { text-align: center; color: #444; }
+        .auth-section { padding: 15px; text-align: center; }
+        .user-info { font-weight: bold; }
+        .booking-form { display: flex; flex-wrap: wrap; gap: 15px; padding: 20px; border-bottom: 1px solid #ddd; margin-bottom: 20px; background-color: #fafafa; border-radius: 8px; align-items: flex-end; }
+        .form-group { flex: 1; min-width: 220px; display: flex; flex-direction: column; }
+        label { margin-bottom: 5px; font-weight: bold; font-size: 0.9em; }
+        input { padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; }
+        button { padding: 12px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; transition: background-color 0.2s; height: 42px; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #bookings-list { list-style-type: none; padding: 0; }
+        .booking-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #eee; }
+        .delete-btn { padding: 5px 10px; background-color: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .message-box { text-align: center; padding: 10px; border-radius: 4px; margin-top: 10px; display: none; }
+        .error { color: #dc3545; background-color: #f8d7da; border: 1px solid #f5c6cb; }
+        .success { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Roller Naptár v3</h1>
+    <div class="auth-section">
+        <div id="gsi-container"></div>
+        <div id="user-display" style="display: none;">
+            Bejelentkezve: <span id="user-name" class="user-info"></span> | <a href="#" id="logout-btn">Kijelentkezés</a>
+        </div>
+    </div>
+    <div id="booking-container" style="display: none;">
+        <div class="booking-form">
+            <div class="form-group">
+                <label for="start-time">Foglalás kezdete:</label>
+                <input type="datetime-local" id="start-time">
+            </div>
+            <div class="form-group">
+                <label for="end-time">Foglalás vége:</label>
+                <input type="datetime-local" id="end-time">
+            </div>
+            <button id="book-btn">Foglalás</button>
+        </div>
+        <div id="message-box" class="message-box"></div>
+        <h2>Aktuális foglalások</h2>
+        <ul id="bookings-list"></ul>
+    </div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io();
+    let googleUserToken = null;
+    let userProfile = null;
+    const ADMIN_EMAIL = 'fehersolyomhoz@gmail.com';
+
+    // --- UI Elemek ---
+    const startTimeInput = document.getElementById('start-time');
+    const endTimeInput = document.getElementById('end-time');
+    const bookBtn = document.getElementById('book-btn');
+    const bookingsList = document.getElementById('bookings-list');
+    const messageBox = document.getElementById('message-box');
+    const gsiContainer = document.getElementById('gsi-container');
+    const userDisplay = document.getElementById('user-display');
+    const userNameSpan = document.getElementById('user-name');
+    const logoutBtn = document.getElementById('logout-btn');
+    const bookingContainer = document.getElementById('booking-container');
+
+    // --- Google Sign-In ---
+    window.onload = function () {
+        google.accounts.id.initialize({
+            client_id: '8606062468-v4fjvcq0cbrunkcu0c4qcv1o1olb1rc2.apps.googleusercontent.com',
+            callback: handleCredentialResponse
+        });
+        google.accounts.id.renderButton(
+            gsiContainer,
+            { theme: "outline", size: "large" }
+        );
+    };
+
+    function handleCredentialResponse(response) {
+        googleUserToken = response.credential;
+        // A tokenből kinyerjük a user adatait (nem biztonságos, csak megjelenítésre!)
+        userProfile = JSON.parse(atob(googleUserToken.split('.')[1]));
+        updateUIForLogin();
+    }
+    
+    function updateUIForLogin() {
+        gsiContainer.style.display = 'none';
+        userDisplay.style.display = 'block';
+        bookingContainer.style.display = 'block';
+        userNameSpan.textContent = userProfile.name + ' (' + userProfile.email + ')';
+    }
+
+    logoutBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        googleUserToken = null;
+        userProfile = null;
+        google.accounts.id.disableAutoSelect();
+        gsiContainer.style.display = 'block';
+        userDisplay.style.display = 'none';
+        bookingContainer.style.display = 'none';
+    });
+
+    // --- Alkalmazás Logika ---
+    setMinDateTime();
+    startTimeInput.addEventListener('change', () => {
+        if (startTimeInput.value) endTimeInput.min = startTimeInput.value;
+    });
+
+    bookBtn.addEventListener('click', () => {
+        const startTime = startTimeInput.value;
+        const endTime = endTimeInput.value;
+
+        if (!startTime || !endTime) return showMessage('Kérlek, válassz kezdő és végpontot!', 'error');
+        if (new Date(startTime) >= new Date(endTime)) return showMessage('A foglalás vége nem lehet korábban, mint a kezdete!', 'error');
+        
+        socket.emit('newBooking', { startTime, endTime, token: googleUserToken });
+    });
+
+    socket.on('updateBookings', (bookings) => {
+        bookingsList.innerHTML = '';
+        bookings.forEach(booking => {
+            const listItem = document.createElement('li');
+            listItem.className = 'booking-item';
+            const startDate = new Date(booking.startTime).toLocaleString('hu-HU');
+            const endDate = new Date(booking.endTime).toLocaleString('hu-HU');
+            
+            let content = '<span><strong>' + booking.userName + '</strong>: ' + startDate + ' - ' + endDate + '</span>';
+            
+            // Törlés gomb megjelenítése a jogosultság alapján
+            if (userProfile && (userProfile.email === booking.userEmail || userProfile.email === ADMIN_EMAIL)) {
+                content += '<button class="delete-btn" data-starttime="' + booking.startTime + '">Törlés</button>';
+            }
+            
+            listItem.innerHTML = content;
+            bookingsList.appendChild(listItem);
+        });
+    });
+
+    bookingsList.addEventListener('click', (e) => {
+        if (e.target.classList.contains('delete-btn')) {
+            const starttime = e.target.dataset.starttime;
+            if (confirm('Biztosan törlöd ezt a foglalást?')) {
+                socket.emit('deleteBooking', { startTime: starttime, token: googleUserToken });
+            }
+        }
+    });
+
+    function setMinDateTime() {
+        const now = new Date();
+        now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+        const minDateTime = now.toISOString().slice(0, 16);
+        startTimeInput.min = minDateTime;
+        endTimeInput.min = minDateTime;
+    }
+
+    function showMessage(message, type) {
+        messageBox.textContent = message;
+        messageBox.className = 'message-box ' + type;
+        messageBox.style.display = 'block';
+        setTimeout(() => { messageBox.style.display = 'none'; }, 4000);
+    }
+    
+    socket.on('bookingError', (message) => showMessage(message, 'error'));
+    socket.on('bookingSuccess', (message) => showMessage(message, 'success'));
+</script>
+</body>
+</html>
